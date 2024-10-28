@@ -163,10 +163,12 @@ export interface ValidatedExecutionArgs {
 
 export interface ExecutionContext {
   validatedExecutionArgs: ValidatedExecutionArgs;
+  completed: boolean;
   cancellableStreams: Set<CancellableStreamRecord> | undefined;
 }
 
 interface IncrementalContext {
+  completed: boolean;
   deferUsageSet?: DeferUsageSet | undefined;
 }
 
@@ -312,6 +314,7 @@ export function experimentalExecuteQueryOrMutationOrSubscriptionEvent(
 ): PromiseOrValue<ExecutionResult | ExperimentalIncrementalExecutionResults> {
   const exeContext: ExecutionContext = {
     validatedExecutionArgs,
+    completed: false,
     cancellableStreams: undefined,
   };
   try {
@@ -362,15 +365,23 @@ export function experimentalExecuteQueryOrMutationOrSubscriptionEvent(
 
     if (isPromise(graphqlWrappedResult)) {
       return graphqlWrappedResult.then(
-        (resolved) => buildDataResponse(exeContext, resolved),
-        (error: unknown) => ({
-          data: null,
-          errors: [error as GraphQLError],
-        }),
+        (resolved) => {
+          exeContext.completed = true;
+          return buildDataResponse(exeContext, resolved);
+        },
+        (error: unknown) => {
+          exeContext.completed = true;
+          return {
+            data: null,
+            errors: [error as GraphQLError],
+          };
+        },
       );
     }
+    exeContext.completed = true;
     return buildDataResponse(exeContext, graphqlWrappedResult);
   } catch (error) {
+    exeContext.completed = true;
     return { data: null, errors: [error] };
   }
 }
@@ -818,7 +829,7 @@ function executeField(
     validatedExecutionArgs;
   const fieldName = fieldDetailsList[0].node.name.value;
   const fieldDef = schema.getField(parentType, fieldName);
-  if (!fieldDef) {
+  if (!fieldDef || (incrementalContext ?? exeContext).completed) {
     return;
   }
 
@@ -2279,6 +2290,7 @@ function collectExecutionGroups(
         path,
         groupedFieldSet,
         {
+          completed: false,
           deferUsageSet,
         },
         deferMap,
@@ -2338,6 +2350,7 @@ function executeExecutionGroup(
       deferMap,
     );
   } catch (error) {
+    incrementalContext.completed = true;
     return {
       pendingExecutionGroup,
       path: pathToArray(path),
@@ -2347,16 +2360,26 @@ function executeExecutionGroup(
 
   if (isPromise(result)) {
     return result.then(
-      (resolved) =>
-        buildCompletedExecutionGroup(pendingExecutionGroup, path, resolved),
-      (error: unknown) => ({
-        pendingExecutionGroup,
-        path: pathToArray(path),
-        errors: [error as GraphQLError],
-      }),
+      (resolved) => {
+        incrementalContext.completed = true;
+        return buildCompletedExecutionGroup(
+          pendingExecutionGroup,
+          path,
+          resolved,
+        );
+      },
+      (error: unknown) => {
+        incrementalContext.completed = true;
+        return {
+          pendingExecutionGroup,
+          path: pathToArray(path),
+          errors: [error as GraphQLError],
+        };
+      },
     );
   }
 
+  incrementalContext.completed = true;
   return buildCompletedExecutionGroup(pendingExecutionGroup, path, result);
 }
 
@@ -2405,7 +2428,7 @@ function buildSyncStreamItemQueue(
         initialPath,
         initialItem,
         exeContext,
-        {},
+        { completed: false },
         fieldDetailsList,
         info,
         itemType,
@@ -2436,7 +2459,7 @@ function buildSyncStreamItemQueue(
           itemPath,
           value,
           exeContext,
-          {},
+          { completed: false },
           fieldDetailsList,
           info,
           itemType,
@@ -2528,7 +2551,7 @@ async function getNextAsyncStreamItemResult(
     itemPath,
     iteration.value,
     exeContext,
-    {},
+    { completed: false },
     fieldDetailsList,
     info,
     itemType,
@@ -2575,10 +2598,16 @@ function completeStreamItem(
       incrementalContext,
       new Map(),
     ).then(
-      (resolvedItem) => buildStreamItemResult(resolvedItem),
-      (error: unknown) => ({
-        errors: [error as GraphQLError],
-      }),
+      (resolvedItem) => {
+        incrementalContext.completed = true;
+        return buildStreamItemResult(resolvedItem);
+      },
+      (error: unknown) => {
+        incrementalContext.completed = true;
+        return {
+          errors: [error as GraphQLError],
+        };
+      },
     );
   }
 
@@ -2605,6 +2634,7 @@ function completeStreamItem(
       };
     }
   } catch (error) {
+    incrementalContext.completed = true;
     return {
       errors: [error],
     };
@@ -2620,13 +2650,20 @@ function completeStreamItem(
         ],
       }))
       .then(
-        (resolvedItem) => buildStreamItemResult(resolvedItem),
-        (error: unknown) => ({
-          errors: [error as GraphQLError],
-        }),
+        (resolvedItem) => {
+          incrementalContext.completed = true;
+          return buildStreamItemResult(resolvedItem);
+        },
+        (error: unknown) => {
+          incrementalContext.completed = true;
+          return {
+            errors: [error as GraphQLError],
+          };
+        },
       );
   }
 
+  incrementalContext.completed = true;
   return buildStreamItemResult(result);
 }
 
