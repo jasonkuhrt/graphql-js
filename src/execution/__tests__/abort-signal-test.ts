@@ -9,7 +9,11 @@ import { parse } from '../../language/parser.js';
 
 import { buildSchema } from '../../utilities/buildASTSchema.js';
 
-import { execute, experimentalExecuteIncrementally } from '../execute.js';
+import {
+  execute,
+  experimentalExecuteIncrementally,
+  subscribe,
+} from '../execute.js';
 import type {
   InitialIncrementalExecutionResult,
   SubsequentIncrementalExecutionResult,
@@ -58,6 +62,10 @@ const schema = buildSchema(`
   type Mutation {
     foo: String
     bar: String
+  }
+
+  type Subscription {
+    foo: String
   }
 `);
 
@@ -579,6 +587,41 @@ describe('Execute: Cancellation', () => {
       errors: [
         {
           message: 'This operation was aborted',
+        },
+      ],
+    });
+  });
+
+  it('should stop the execution when aborted during subscription', async () => {
+    const abortController = new AbortController();
+    const document = parse(`
+      subscription {
+        foo
+      }
+    `);
+
+    const resultPromise = subscribe({
+      document,
+      schema,
+      abortSignal: abortController.signal,
+      rootValue: {
+        foo: async () =>
+          new Promise(() => {
+            /* will never resolve */
+          }),
+      },
+    });
+
+    abortController.abort();
+
+    const result = await resultPromise;
+
+    expectJSON(result).toDeepEqual({
+      errors: [
+        {
+          message: 'This operation was aborted',
+          path: ['foo'],
+          locations: [{ line: 3, column: 9 }],
         },
       ],
     });

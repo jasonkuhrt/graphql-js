@@ -673,20 +673,6 @@ function executeFieldsSerially(
     groupedFieldSet,
     (graphqlWrappedResult, [responseName, fieldDetailsList]) => {
       const fieldPath = addPath(path, responseName, parentType.name);
-      const abortSignal = exeContext.validatedExecutionArgs.abortSignal;
-      if (abortSignal?.aborted) {
-        addErrors(graphqlWrappedResult, [
-          buildFieldError(
-            abortSignal.reason,
-            parentType,
-            fieldDetailsList,
-            fieldPath,
-          ),
-        ]);
-        graphqlWrappedResult.rawResult[responseName] = null;
-        return graphqlWrappedResult;
-      }
-
       const result = executeField(
         exeContext,
         parentType,
@@ -837,6 +823,22 @@ function executeField(
   }
 
   const returnType = fieldDef.type;
+
+  if (abortSignal?.aborted) {
+    return {
+      rawResult: null,
+      incrementalDataRecords: undefined,
+      errors: [
+        buildFieldError(
+          abortSignal?.reason,
+          returnType,
+          fieldDetailsList,
+          path,
+        ),
+      ],
+    };
+  }
+
   const resolveFn = fieldDef.resolve ?? validatedExecutionArgs.fieldResolver;
 
   const info = buildResolveInfo(
@@ -1758,23 +1760,13 @@ function completeObjectValue(
   incrementalContext: IncrementalContext | undefined,
   deferMap: ReadonlyMap<DeferUsage, DeferredFragmentRecord> | undefined,
 ): PromiseOrValue<GraphQLWrappedResult<ObjMap<unknown>>> {
-  const validatedExecutionArgs = exeContext.validatedExecutionArgs;
-  const abortSignal = validatedExecutionArgs.abortSignal;
-  if (abortSignal?.aborted) {
-    throw locatedError(
-      abortSignal.reason,
-      toNodes(fieldDetailsList),
-      pathToArray(path),
-    );
-  }
-
   // If there is an isTypeOf predicate function, call it with the
   // current result. If isTypeOf returns false, then raise an error rather
   // than continuing execution.
   if (returnType.isTypeOf) {
     const isTypeOf = returnType.isTypeOf(
       result,
-      validatedExecutionArgs.contextValue,
+      exeContext.validatedExecutionArgs.contextValue,
       info,
     );
 
@@ -2214,7 +2206,19 @@ function executeSubscription(
     const result = resolveFn(rootValue, args, contextValue, info, abortSignal);
 
     if (isPromise(result)) {
-      return result
+      const { promise, resolve, reject } = promiseWithResolvers<unknown>();
+      abortSignal?.addEventListener(
+        'abort',
+        () =>
+          reject(
+            locatedError(abortSignal.reason, fieldNodes, pathToArray(path)),
+          ),
+        { once: true },
+      );
+      // eslint-disable-next-line @typescript-eslint/use-unknown-in-catch-callback-variable
+      result.then(resolve, reject);
+
+      return promise
         .then(assertEventStream)
         .then(undefined, (error: unknown) => {
           throw locatedError(error, fieldNodes, pathToArray(path));
