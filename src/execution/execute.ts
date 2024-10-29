@@ -13,6 +13,7 @@ import { addPath, pathToArray } from '../jsutils/Path.js';
 import { promiseForObject } from '../jsutils/promiseForObject.js';
 import type { PromiseOrValue } from '../jsutils/PromiseOrValue.js';
 import { promiseReduce } from '../jsutils/promiseReduce.js';
+import { promiseWithResolvers } from '../jsutils/promiseWithResolvers.js';
 
 import { GraphQLError } from '../error/GraphQLError.js';
 import { locatedError } from '../error/locatedError.js';
@@ -865,7 +866,31 @@ function executeField(
     const result = resolveFn(source, args, contextValue, info, abortSignal);
 
     if (isPromise(result)) {
-      return completePromisedValue(
+      const { promise, resolve, reject } =
+        promiseWithResolvers<GraphQLWrappedResult<unknown>>();
+      abortSignal?.addEventListener(
+        'abort',
+        () => {
+          try {
+            resolve({
+              rawResult: null,
+              incrementalDataRecords: undefined,
+              errors: [
+                buildFieldError(
+                  abortSignal.reason,
+                  returnType,
+                  fieldDetailsList,
+                  path,
+                ),
+              ],
+            });
+          } catch (error) {
+            reject(error);
+          }
+        },
+        { once: true },
+      );
+      completePromisedValue(
         exeContext,
         returnType,
         fieldDetailsList,
@@ -874,7 +899,9 @@ function executeField(
         result,
         incrementalContext,
         deferMap,
-      );
+        // eslint-disable-next-line @typescript-eslint/use-unknown-in-catch-callback-variable
+      ).then(resolve, reject);
+      return promise;
     }
 
     const completed = completeValue(

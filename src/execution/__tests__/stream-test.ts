@@ -1661,6 +1661,11 @@ describe('Execute: stream directive', () => {
             items: [{ name: 'Luke' }],
             id: '1',
           },
+        ],
+        hasNext: true,
+      },
+      {
+        incremental: [
           {
             data: { scalarField: null },
             id: '0',
